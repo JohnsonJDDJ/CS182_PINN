@@ -11,8 +11,7 @@ import matplotlib.pyplot as plt
 import scipy.io
 from scipy.interpolate import griddata
 from pyDOE import lhs
-from plotting import newfig, savefig
-from mpl_toolkits.mplot3d import Axes3D
+# from mpl_toolkits.mplot3d import Axes3D
 import time
 import matplotlib.gridspec as gridspec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -25,34 +24,42 @@ tf.set_random_seed(1234)
 class PhysicsInformedNN:
     # Initialize the class
     def __init__(self, x0, u0, v0, tb, X_f, layers, lb, ub):
-        
+                
+        self.lb = lb # lower bound (-5 for x and 0 for t)
+        self.ub = ub # upper bound (5 for x and pi/2 for t)
+
+        # == Initial and boundary condition data ==
+        # initial conditions when t = 0, h(x, t) = 2sech(x)
         X0 = np.concatenate((x0, 0*x0), 1) # (x0, 0)
-        X_lb = np.concatenate((0*tb + lb[0], tb), 1) # (lb[0], tb)
-        X_ub = np.concatenate((0*tb + ub[0], tb), 1) # (ub[0], tb)
-        
-        self.lb = lb
-        self.ub = ub
-               
+        # Initial condition data       
         self.x0 = X0[:,0:1]
         self.t0 = X0[:,1:2]
 
+        # lower and upper boundary condition when x = -5
+        # h(-5, t) = h(5, t)
+        X_lb = np.concatenate((0*tb + lb[0], tb), 1) # (lb[0], tb), lower bound
+        X_ub = np.concatenate((0*tb + ub[0], tb), 1) # (ub[0], tb), upper bound
+        # Boundary condition data; lb for lower bound, ub for upper bound
         self.x_lb = X_lb[:,0:1]
         self.t_lb = X_lb[:,1:2]
-
         self.x_ub = X_ub[:,0:1]
         self.t_ub = X_ub[:,1:2]
         
+        # Collocation points data
         self.x_f = X_f[:,0:1]
         self.t_f = X_f[:,1:2]
         
-        self.u0 = u0
-        self.v0 = v0
+        # Output h(t, x) on initial and boundary conditions
+        self.u0 = u0 # real part
+        self.v0 = v0 # imaginary part
         
         # Initialize NNs
         self.layers = layers
         self.weights, self.biases = self.initialize_NN(layers)
         
-        # tf Placeholders        
+        # tf Placeholders  
+        # Don't really know what are these, but these are related to
+        # `tf_dict` used during traning.     
         self.x0_tf = tf.placeholder(tf.float32, shape=[None, self.x0.shape[1]])
         self.t0_tf = tf.placeholder(tf.float32, shape=[None, self.t0.shape[1]])
         
@@ -74,7 +81,13 @@ class PhysicsInformedNN:
         self.u_ub_pred, self.v_ub_pred, self.u_x_ub_pred, self.v_x_ub_pred = self.net_uv(self.x_ub_tf, self.t_ub_tf)
         self.f_u_pred, self.f_v_pred = self.net_f_uv(self.x_f_tf, self.t_f_tf)
         
-        # Loss
+        # Loss (MSE_0 + MSE_b + MSE_f)
+        # Row 1 and 2: real and imag part of MSE_0 for initial condition.
+        #   MSE_0 = mean( ||2sech(x) - h(x, 0)||^2 )
+        # Row 3 to 6: real and imag part of MSE_b for boundary condition
+        #   MSE_b = mean( ||h(-5, t) - h(5, t)||^2 + ||hx(-5, t) - hx(5, t)||^2 )
+        # Row 7 and 8: real and imag part of MSE_f for Shrodinger's equation
+        #   MSE_f = mean||f(x, t)||^2
         self.loss = tf.reduce_mean(tf.square(self.u0_tf - self.u0_pred)) + \
                     tf.reduce_mean(tf.square(self.v0_tf - self.v0_pred)) + \
                     tf.reduce_mean(tf.square(self.u_lb_pred - self.u_ub_pred)) + \
@@ -87,7 +100,7 @@ class PhysicsInformedNN:
         # Optimizers
         self.optimizer = tf.contrib.opt.ScipyOptimizerInterface(self.loss, 
                                                                 method = 'L-BFGS-B', 
-                                                                options = {'maxiter': 50000,
+                                                                options = {'maxiter': 200,
                                                                            'maxfun': 50000,
                                                                            'maxcor': 50,
                                                                            'maxls': 50,
@@ -103,7 +116,10 @@ class PhysicsInformedNN:
         init = tf.global_variables_initializer()
         self.sess.run(init)
               
-    def initialize_NN(self, layers):        
+    def initialize_NN(self, layers):
+        '''
+        Initialize weights and biases in each layer
+        '''        
         weights = []
         biases = []
         num_layers = len(layers) 
@@ -115,25 +131,39 @@ class PhysicsInformedNN:
         return weights, biases
         
     def xavier_init(self, size):
+        '''
+        Xavier Initialization
+        '''
         in_dim = size[0]
         out_dim = size[1]        
         xavier_stddev = np.sqrt(2/(in_dim + out_dim))
         return tf.Variable(tf.truncated_normal([in_dim, out_dim], stddev=xavier_stddev), dtype=tf.float32)
     
     def neural_net(self, X, weights, biases):
+        '''
+        Forward pass of neural net with tanh nonlinearity
+        '''
         num_layers = len(weights) + 1
-        
+        # ??? no idea what this is ???
         H = 2.0*(X - self.lb)/(self.ub - self.lb) - 1.0
         for l in range(0,num_layers-2):
             W = weights[l]
             b = biases[l]
-            H = tf.tanh(tf.add(tf.matmul(H, W), b))
+            H = tf.tanh(tf.add(tf.matmul(H, W), b)) # nonlinearity
         W = weights[-1]
         b = biases[-1]
-        Y = tf.add(tf.matmul(H, W), b)
+        Y = tf.add(tf.matmul(H, W), b) # last layer
         return Y
     
     def net_uv(self, x, t):
+        '''
+        Return result from forward pass of the neural network
+        and also the gradients with respect to x
+        
+        returns: 
+        - u, v: real and imag part of h(x, t)))
+        - u_x, v_x: real and imag part of hx(x, t))
+        '''
         X = tf.concat([x,t],1)
         
         uv = self.neural_net(X, self.weights, self.biases)
@@ -146,6 +176,9 @@ class PhysicsInformedNN:
         return u, v, u_x, v_x
 
     def net_f_uv(self, x, t):
+        '''
+        Returns the real and imag part of f(x, t)
+        '''
         u, v, u_x, v_x = self.net_uv(x,t)
         
         u_t = tf.gradients(u, t)[0]
@@ -164,6 +197,8 @@ class PhysicsInformedNN:
         
     def train(self, nIter):
         
+        # previously defined tf_placeholders
+        # my guess data is feeded through `tf_dict` during training
         tf_dict = {self.x0_tf: self.x0, self.t0_tf: self.t0,
                    self.u0_tf: self.u0, self.v0_tf: self.v0,
                    self.x_lb_tf: self.x_lb, self.t_lb_tf: self.t_lb,
@@ -247,7 +282,7 @@ if __name__ == "__main__":
     model = PhysicsInformedNN(x0, u0, v0, tb, X_f, layers, lb, ub)
              
     start_time = time.time()                
-    model.train(50000)
+    model.train(200)
     elapsed = time.time() - start_time                
     print('Training time: %.4f' % (elapsed))
     
@@ -269,7 +304,6 @@ if __name__ == "__main__":
 
     FU_pred = griddata(X_star, f_u_pred.flatten(), (X, T), method='cubic')
     FV_pred = griddata(X_star, f_v_pred.flatten(), (X, T), method='cubic')     
-    
 
     
     ######################################################################
@@ -280,8 +314,18 @@ if __name__ == "__main__":
     X_lb = np.concatenate((0*tb + lb[0], tb), 1) # (lb[0], tb)
     X_ub = np.concatenate((0*tb + ub[0], tb), 1) # (ub[0], tb)
     X_u_train = np.vstack([X0, X_lb, X_ub])
+    
+    def figsize(scale, nplots = 1):
+        fig_width_pt = 390.0                          # Get this from LaTeX using \the\textwidth
+        inches_per_pt = 1.0/72.27                       # Convert pt to inch
+        golden_mean = (np.sqrt(5.0)-1.0)/2.0            # Aesthetic ratio (you could change this)
+        fig_width = fig_width_pt*inches_per_pt*scale    # width in inches
+        fig_height = nplots*fig_width*golden_mean              # height in inches
+        fig_size = [fig_width,fig_height]
+        return fig_size
 
-    fig, ax = newfig(1.0, 0.9)
+    fig = plt.figure(figsize=figsize(1.0, 0.9))
+    ax = fig.add_subplot(111)
     ax.axis('off')
     
     ####### Row 0: h(t,x) ##################    
