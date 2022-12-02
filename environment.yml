@@ -1,0 +1,8 @@
+name: cs182_pinn
+dependencies:
+  - python = 3.9
+  - jax
+  - optax
+  - numpy
+  - matplotlib
+  - ipykernel
