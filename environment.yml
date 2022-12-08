@@ -1,9 +1,9 @@
 name: cs182_pinn
 dependencies:
   - python = 3.9
-  - jax
-  - optax
-  - numpy
-  - matplotlib
-  - ipykernel
-  - tqdm
+  - jax = 0.2
+  - optax = 0.1
+  - numpy = 1.23
+  - matplotlib = 3.6
+  - ipykernel = 6.17
+  - tqdm = 4.64.1
